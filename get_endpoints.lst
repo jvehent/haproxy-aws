@@ -1,0 +1,9 @@
+/
+/account/devices
+/account/keys
+/complete_reset_password
+/recovery_email/status
+/verify_email
+/.well-known/browserid
+/.well-known/browserid/provision.html
+/.well-known/browserid/sign_in.html

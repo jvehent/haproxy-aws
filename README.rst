@@ -69,12 +69,11 @@ PROXY protocol support must be enabled on the ELB.
 
 .. code:: bash
 
-	$ ./elb-describe-lb-policy-types -I AKIA... -S Ww1... --region us-east-1
-	POLICY_TYPE  ProxyProtocolPolicyType	Policy that controls whether to include the
-											IP address and port of the originating request
-											for TCP messages. This policy operates on
-											TCP/SSL listeners only
-	.....
+    $ ./elb-describe-lb-policy-types -I AKIA... -S Ww1... --region us-east-1
+    POLICY_TYPE  ProxyProtocolPolicyType    Policy that controls whether to include the
+                                            IP address and port of the originating request
+                                            for TCP messages. This policy operates on
+                                            TCP/SSL listeners only
 
 The policy name we want to enable is `ProxyProtocolPolicyType`. We need the load
 balancer name for that, and the following command:
@@ -279,6 +278,13 @@ Cookies can be captures the same way:
 Rate limiting & DDoS protection
 -------------------------------
 
+Stick tables
+~~~~~~~~~~~~
+By default, HAProxy defines on stick table per backend. The table is named after
+the backend, so backend `nodejs-something` will have a table called
+`nodejs-something`.
+
+
 Automated mode
 ~~~~~~~~~~~~~~
 
@@ -287,6 +293,127 @@ Blacklists & Whitelists
 
 URL filtering with ACLs
 -----------------------
+
+HAProxy has the ability to instead requests before passing them to the backend.
+This is limited to query strings, and doesn't support inspecting the body of a
+POST request. But we can already leverage this to filter out unwanted traffic.
+
+The first thing we need, is a list of endpoints sorted by HTTP method. This can
+be obtained from the web application directly. Note that some endpoints, such as
+`__heartbeat__` should be limited to HAProxy, and thus blocked from clients.
+
+In addition to matching an exact path, you may want to match on URL parameters.
+This will be discussed in the next section
+
+.. code:: bash
+
+	$ grep -A 1 -R "method: 'GET'," ~/git/fxa-auth-server/routes/* | grep "path: " | awk '{print $3}' | cut -d "'" -f 2 | sort
+	/account/devices
+	/account/keys
+	/recovery_email/status
+	/
+	/__heartbeat__
+	/.well-known/browserid
+	/.well-known/browserid/sign_in.html
+	/.well-known/browserid/provision.html
+	/verify_email
+	/complete_reset_password
+
+	$ grep -A 1 -R "method: 'POST'," ~/git/fxa-auth-server/routes/* | grep "path: " | awk '{print $3}' | cut -d "'" -f 2 | sort
+	/account/create
+	/account/login
+	/recovery_email/resend_code
+	/recovery_email/verify_code
+	/account/reset
+	/account/destroy
+	/password/change/start
+	/password/change/finish
+	/password/forgot/send_code
+	/password/forgot/resend_code
+	/password/forgot/verify_code
+	/session/destroy
+	/certificate/sign
+	/get_random_bytes
+
+We store these endpoints in two files:
+
+`get_endpoints.lst`
+
+.. include :: get_endpoints.lst
+   :code: bash
+
+`post_endpoints.lst`
+
+.. include :: post_endpoints.lst
+   :code: bash
+
+In the HAProxy configuration, we can build ACLs around these files. The `block`
+method takes a condition, as described in the Haproxy documentation, section
+`7.2. Using ACLs to form conditions`.
+
+.. code:: bash
+
+	# Requests validation using ACLs ---
+	acl valid-get path -f /etc/haproxy/get_endpoints.lst
+	acl valid-post path -f /etc/haproxy/post_endpoints.lst
+
+	# block requests that don't match the predefined endpoints
+	block unless METH_GET valid-get or METH_POST valid-post
+
+Filtering URL parameters on GET requests
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+While HAProxy supports regexes on URLs, writing regexes that can validate URL
+parameters is a path that leads to frustration and insanity. A much simpler
+approach consists of using the `url_param` ACL provided by HAProxy.
+
+For example, take the NodeJS endpoint below:
+
+.. code:: javascript
+
+    {
+      method: 'GET',
+      path: '/verify_email',
+      config: {
+        validate: {
+          query: {
+            code: isA.string().max(32).regex(HEX_STRING).required(),
+            uid: isA.string().max(64).regex(HEX_STRING).required(),
+            service: isA.string().max(16).alphanum().optional(),
+            redirectTo: isA.string()
+              .max(512)
+              .regex(validators.domainRegex(redirectDomain))
+              .optional()
+          }
+        }
+      },
+      handler: function (request, reply) {
+        return reply().redirect(config.contentServer.url + request.raw.req.url)
+      }
+    },
+
+This endpoints receives requests on `/verify_email` with the parameters `code`,
+a 32 character hexadecimal, `uid`, a 64 character hexadecimal, `service`, a 16
+character string, and `redirectTo`, a FQDN. However, only `code` and `uid` are
+required.
+
+In the previous section, we validated that requests on `/verify_email` must use
+the method GET. Now we are taking the validation one step further, and blocking
+requests on this endpoint that do not match our prerequisite.
+
+.. code:: bash
+
+	acl endpoint-verify_email path /verify_email
+	acl param-code urlp_reg(code) [0-9a-fA-F]{32}
+	acl param-uid urlp_reg(uid) [0-9a-fA-F]{64}
+	block if endpoint-verify_email !param-code or endpoint-verify_email !param-uid
+
+The follow request will be accepted, everything else will be rejected with a
+HTTP error 403.
+
+.. code:: bash
+
+	https://haproxy_server/verify_email?code=d64f53326cec3a1af60166a929ca52bd&uid=d64f53326cec3a1af60166a929c3d7b2131561792b4837377ed2e0cde3295df2
 
 HAProxy management
 ------------------
