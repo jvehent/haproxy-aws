@@ -105,7 +105,7 @@ HAProxy frontend
 
 The HAProxy frontend listens on port 443 with a SSL configuration, as follow:
 
-.. code:: bash
+.. code::
 
 	frontend https
 		bind 0.0.0.0:443 accept-proxy ssl ......
@@ -133,7 +133,7 @@ returned. All the ELB has to do is to query the URL at
 http://haproxy_host:34180/haproxy_status . To reduce the overhead, we also
 disable SSL on the health frontend.
 
-.. code:: bash
+.. code::
 
 	# frontend used to return health status without requiring SSL
 	frontend health
@@ -162,17 +162,17 @@ For our logging, we want the following:
 2. SSL information
 3. HTTP information
 
-.. code:: bash
+.. code::
 
-	log-format [%pid]\ [%Ts.%ms]\ %ac/%fc/%bc/%bq/%sc/%sq/%rc\ %Tq/%Tw/%Tc/%Tr/%Tt\
-	%tsc\ %ci:%cp\ %fi:%fp\ %si:%sp\ %ft\ %sslc\ %sslv\ %{+Q}r\ %ST\ %b:%s\ %ID\
-	%{+Q}CC\ %{+Q}hr\ %{+Q}CS\ %{+Q}hs\ %B\ bytes
+	log-format [%pid]\ [%Ts.%ms]\ %ac/%fc/%bc/%bq/%sc/%sq/%rc\ %Tq/%Tw/%Tc/%Tr/%Tt\ %tsc\ %ci:%cp\ %fi:%fp\ %si:%sp\ %ft\ %sslc\ %sslv\ %{+Q}r\ %ST\ %b:%s\ "%CC"\ "%hr"\ "%CS"\ "%hs"\ "%B\ bytes"\ %ID
+
+
 
 The format above will generate:
 
- ::
+.. code::
 
-	Mar  7 14:18:50 localhost haproxy[10282]: [10282] [1394201930.258] 1/1/0/0/1/0/0 91/0/0/3/95 ---- 2.1.17.87:52354 10.151.122.228:443 127.0.0.1:8000 fxa-https~ ECDHE-RSA-AES128-SHA TLSv1.2 "GET / HTTP/1.1" 200 fxa-nodejs:nodejs1 485B7525:CC82_0A977AE4:01BB_5319D54A_0004:282A - {|Mozilla/5.0 (X11; Linux x86_64; rv:25.0) Gecko/20100101 Firefox/} - - 705 bytes
+	Mar 12 21:18:22 localhost haproxy[23755]: [23755] [1394659102.263] 2/1/0/0/1/0/0 97/0/0/6/103 ---- 1.10.3.10:36314 10.151.122.228:443 127.0.0.1:55555 fxa-https~ ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 "GET /v1/somethingsomething HTTP/1.1" 404 acl-logger:localhost "-" "{||Mozilla/5.0 (X11; Linux x86_64; rv:30.0) Gecko/20100101 Firefox/}" "-" "" "804 bytes" 47B4176E:8DDA_0A977AE4:01BB_5320CF1E_0005:5CCB
 
 The log-format contains very detailed information on the connection itself, but
 also on the state of haproxy itself. Below is a description of the fields we
@@ -202,12 +202,12 @@ used in our custom log format.
 * `%{+Q}r`: HTTP request, between double quotes
 * `%ST`: HTTP status code
 * `%b:%s`: backend name and server name
-* `%ID`: Unique ID generated for each request
 * `%CC`: captured request cookies
 * `%hr`: captured request headers
 * `%CS`: captured response cookies
 * `%hs`: captured response headers
 * `%B`: bytes read from server to client (response size)
+* `%ID`: Unique ID generated for each request
 
 For more details on the available logging variables, see the HAProxy
 configuration, under `8.2.4. Custom log format`.
@@ -226,7 +226,7 @@ tracking requests propagation a lot easier.
 
 The unique ID is declared on the HTTPS frontend as follow:
 
-.. code:: bash
+.. code::
 
 	# Insert a unique request identifier is the headers of the request
 	# passed to the backend
@@ -264,29 +264,27 @@ frontend.
 Here's how we can capture the user-agent and referrer sent by the client in the
 HTTP request.
 
-.. code:: bash
+.. code::
 
 	capture request header Referrer len 64
 	capture request header User-Agent len 64
 
 Cookies can be captures the same way:
 
-.. code:: bash
+.. code::
 
 	capture cookie mycookie123=  len 32
 
 Rate limiting & DDoS protection
 -------------------------------
 
-Stick tables
-~~~~~~~~~~~~
+Automated rate limiting
+~~~~~~~~~~~~~~~~~~~~~~~
+
 By default, HAProxy defines on stick table per backend. The table is named after
 the backend, so backend `nodejs-something` will have a table called
 `nodejs-something`.
 
-
-Automated mode
-~~~~~~~~~~~~~~
 
 Blacklists & Whitelists
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -351,7 +349,7 @@ In the HAProxy configuration, we can build ACLs around these files. The `block`
 method takes a condition, as described in the Haproxy documentation, section
 `7.2. Using ACLs to form conditions`.
 
-.. code:: bash
+.. code::
 
 	# Requests validation using ACLs ---
 	acl valid-get path -f /etc/haproxy/get_endpoints.lst
@@ -378,7 +376,7 @@ For example, take the NodeJS endpoint below:
         validate: {
           query: {
             code: isA.string().max(32).regex(HEX_STRING).required(),
-            uid: isA.string().max(64).regex(HEX_STRING).required(),
+            uid: isA.string().max(32).regex(HEX_STRING).required(),
             service: isA.string().max(16).alphanum().optional(),
             redirectTo: isA.string()
               .max(512)
@@ -401,19 +399,158 @@ In the previous section, we validated that requests on `/verify_email` must use
 the method GET. Now we are taking the validation one step further, and blocking
 requests on this endpoint that do not match our prerequisite.
 
-.. code:: bash
+.. code::
 
 	acl endpoint-verify_email path /verify_email
-	acl param-code urlp_reg(code) [0-9a-fA-F]{32}
-	acl param-uid urlp_reg(uid) [0-9a-fA-F]{64}
+	acl param-code urlp_reg(code) [0-9a-fA-F]{1,32}
+	acl param-uid urlp_reg(uid) [0-9a-fA-F]{1,32}
 	block if endpoint-verify_email !param-code or endpoint-verify_email !param-uid
 
 The follow request will be accepted, everything else will be rejected with a
 HTTP error 403.
 
-.. code:: bash
+.. code::
 
 	https://haproxy_server/verify_email?code=d64f53326cec3a1af60166a929ca52bd&uid=d64f53326cec3a1af60166a929c3d7b2131561792b4837377ed2e0cde3295df2
+
+Using regexes to validate URL parameters is a powerful feature. Below is another
+example that matches an email addresses using case-insensitive regex:
+
+.. code::
+
+	acl endpoint-complete_reset_password path /complete_reset_password
+	acl param-email urlp_reg(email) -i ^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,4}$
+	acl param-token urlp_reg(token) [0-9a-fA-F]{1,64}
+	block if endpoint-complete_reset_password !param-email or endpoint-complete_reset_password !param-token or endpoint-complete_reset_password !param-code
+
+Note that we didn't redefine `param-code` when we reused it in the `block`
+command. This is because ACL are defined globally for a frontend, and can
+be reused multiple times.
+
+Filtering payloads on POST requests
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+POST requests are harder to validate, because they do not follow a predefined
+format, but also because the client could be sending the body over a long period
+of time, split over dozens of packets.
+
+However, in the case of an API that only handles small POST payloads, we can at
+least verify the size of the payload sent by the client, and make sure that
+clients do not overload the backend with random data. This can be done using an
+ACL on the content-length header of the request. The ACL below discard requests
+that have a content-length larger than 5 kilo-bytes (which is already a lot of
+text).
+
+.. code::
+
+	# match content-length larger than 5kB
+	acl request-too-big hdr_val(content-length) gt 5000
+	block if METH_POST request-too-big
+
+Marking instead of blocking
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Blocking requests may be the preferred behavior in production, but only after a
+grace period that allows you to build a traffic profile, and fine tune your
+configuration. Instead of using `block` statements in the ACLs, we can insert a
+header with a description of the blocking decision. This header will be logged,
+and can be analyzed to verify that no legitimate traffic would be blocked.
+
+However, HAProxy seem unable to log request header that it has set itself,
+probably because the `capture request header` operation is performed before the
+`http-request set-header` one. So we need a workaround.
+
+The configuration below uses a custom header `X-Haproxy-ACL` which is set to the
+string `pass` by default. If an ACL matches, the string is changed to the name
+of the ACL that matched.
+At the end of the ACL evaluation, if the value of this header is not `pass`, the
+request is sent to another backend that the default one. This backend, called
+`acl-logger` loops back to a frontend also called `acl-logger`. The sole purpose
+of these two is to pass the request through HAProxy again, and log the
+`X-Haproxy-ACL` header. It's a hack, but it works. The downside is we know have
+two access logs for this one request, because it passed HAProxy twice.
+
+ ::
+
+                    {primary logging}
+     request        +--------------+       +---------------+
+    +-------------->|frontend      |+----->|backend        |      +---------+
+                    |   fxa-https  |       |    fxa-nodejs |+---->|         |
+                    +--------------+       +---------------+      |         |
+                           +                     ^                |         |
+                           |                     |                | NodeJS  |
+                           |                     |                |         |
+                    +------v-------+       +-----+--------+       |         |
+                    |backend       |+----->|frontend      |       |         |
+                    |   acl-logger |       |   acl-logger |       |         |
+                    +--------------+       +--------------+       +---------+
+                                         {secondary logging}
+
+In the main frontend, we add the following logic:
+
+.. code::
+
+	# ~~~ Requests validation using ACLs ~~~
+	# we use a custom HTTP header to store the result of HAProxy's ACLs. The
+	# default value is set to `pass`, and modified by ACLs below
+	http-request set-header X-Haproxy-ACL pass
+
+	# block content-length larger than 5kB
+	acl request-too-big hdr_val(content-length) gt 5000
+	http-request set-header X-Haproxy-ACL request-too-big if METH_POST request-too-big
+
+	# if previous ACL didn't pass, sent to logger backend
+	acl pass-acl-validation req.hdr(X-Haproxy-ACL) -m str pass
+	use_backend acl-logger if !pass-acl-validation
+
+Then, we create a new pair of frontend/backend to handle these requests:
+
+.. code::
+
+	frontend acl-logger
+			bind localhost:55555
+			capture request header X-Haproxy-ACL len 64
+			capture request header X-Unique-ID len 64
+			default_backend fxa-nodejs
+
+	backend acl-logger
+			server localhost localhost:55555
+
+In the logs, we know have two log entries for each request that doesn't pass our
+ACLs, and we can use the `Unique ID` value to cross-reference them.
+In the sample below, the first log line indicates `invalid-endpoint` in the
+captured headers, which is the name of the ACL that didn't pass.
+
+.. code::
+
+	Mar 12 21:32:35 localhost haproxy[23755]: [23755] [1394659955.945] 2/1/0/0/1/0/0 0/0/0/4/5 ---- 127.0.0.1:48120 127.0.0.1:55555 127.0.0.1:8000 acl-logger - - "GET /v1/somethingsomething HTTP/1.1" 404 fxa-nodejs:nodejs1 "-" "{invalid-endpoint|47B4176E:8E5E_0A977AE4:01BB_5320D273_03FF:5CCB}" "-" "" "826 bytes"
+
+	Mar 12 21:32:35 localhost haproxy[23755]: [23755] [1394659955.850] 2/1/0/0/1/0/0 94/0/0/5/99 ---- 1.10.2.10:36446 10.151.122.228:443 127.0.0.1:55555 fxa-https~ ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 "GET /v1/somethingsomething HTTP/1.1" 404 acl-logger:localhost "-" "{||Mozilla/5.0 (X11; Linux x86_64; rv:30.0) Gecko/20100101 Firefox/}" "-" "" "802 bytes" 47B4176E:8E5E_0A977AE4:01BB_5320D273_03FF:5CCB
+
+To make the logs a bit easier to read, we can enable the PROXY protocol on the
+`acl-logger` backend, such that the log lines will reflect the public IP of the
+client.
+
+On the backend and frontend for ACL logger, add the option to send and accept
+the PROXY header.
+
+.. code::
+
+	frontend acl-logger
+			bind localhost:55555 accept-proxy
+			capture request header X-Haproxy-ACL len 64
+			capture request header X-Unique-ID len 64
+			default_backend fxa-nodejs
+
+	backend acl-logger
+			server localhost localhost:55555 send-proxy
+
+Now both log lines reflect the public IP of the client **1.10.2.10**.
+
+.. code::
+
+	Mar 13 14:29:41 localhost haproxy[17922]: [17922] [1394720981.363] 2/1/0/0/1/0/0 0/0/0/6/6 ---- 1.10.2.10:41315 10.151.122.228:443 127.0.0.1:8000 acl-logger - - "GET /v1/somethingsomething HTTP/1.1" 404 fxa-nodejs:nodejs1 "-" "{invalid-endpoint|47B4176E:A163_0A977AE4:01BB_5321C0D5_000D:4602}" "-" "" "829 bytes"
+	Mar 13 14:29:41 localhost haproxy[17922]: [17922] [1394720981.268] 2/1/0/0/1/0/0 95/0/0/7/102 ---- 1.10.2.10:41315 10.151.122.228:443 127.0.0.1:55555 fxa-https~ ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 "GET /v1/somethingsomething HTTP/1.1" 404 acl-logger:localhost "-" "{||Mozilla/5.0 (X11; Linux x86_64; rv:30.0) Gecko/20100101 Firefox/}" "-" "" "805 bytes" 47B4176E:A163_0A977AE4:01BB_5321C0D5_000D:4602
 
 HAProxy management
 ------------------
