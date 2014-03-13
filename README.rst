@@ -1,38 +1,65 @@
-==============================================
-HAProxy termination in AWS: technical overview
-==============================================
+=========================================
+Guidelines for HAProxy termination in AWS
+=========================================
 
-.. |date| date::
-.. |time| date:: %H:%M
+.. title:: Guidelines for HAProxy termination in AWS
+.. |gentime| date:: %F %H:%M %Z
+.. role:: lvl_low
+	:class: st_gray
+.. role:: lvl_medium
+	:class: st_blue
+.. role:: lvl_high
+	:class: st_yellow
+.. role:: lvl_max
+	:class: st_red
+.. role:: ready
+	:class: st_green
+.. role:: not_ready
+	:class: st_red
+.. |br| raw:: html
 
-:Revision: Last updated on |date| at |time|.
-:Author: Julien Vehent <julien@linuxwall.info>
+	<br />
 
-.. sectnum::
+.. sidebar:: Document status
 
-.. contents:: Table of Contents
+           +-----------------------+------------------------------------------------------+
+           |:not_ready:`NOT READY` | $Revision:        $ @ |gentime|                      |
+           +===============+=======+=============+=======================+================+
+           |**Author**     |Julien Vehent        |**Review**             | CloudOps       |
+           +---------------+---------------------+-----------------------+----------------+
+
+    .. sectnum::
+
+    .. contents:: **Table of contents**
+               :depth: 2
+
+Summary & Scope
+---------------
 
 This document explains how HAProxy and Elastic Load Balancer can be used in
-Amazon Web Services to provide performant and secure HTTPS termination. The goal
-is to provide the following features:
+Amazon Web Services to provide performant and secure termination of traffic
+to an API service. The goal is to provide the following features:
 
-* DDoS Protection: we use HAProxy to mitigate low to medium DDoS attacks, with
+- **DDoS Protection**: we use HAProxy to mitigate low to medium DDoS attacks, with
   sane limits and custom blacklist.
 
-* Application firewall:  we perform a first level of filtering in HAProxy, that
+- **Application firewall**:  we perform a first level of filtering in HAProxy, that
   protects NodeJS against all sorts of attack, known and to come. This will be done
   by inserting a set of regexes in HAProxy ACLs, that get updated when the
   application routes are updated. Note that managing these ACLs will not impact
   uptime, or require redeployment.
 
-* SSL/TLS: ELBs support the PROXY protocol, and so does HAProxy, which allows us
+- **SSL/TLS**: ELBs support the PROXY protocol, and so does HAProxy, which allows us
   to proxy the tcp connection to HAProxy. It gives us better TLS, backed by
   OpenSSL, at the cost of managing the TLS keys on the HAProxy instances.
 
-* Logging: ELBs have no support for logging. HAProxy, however, has excellent
+- **Logging**: ELBs have limited support for logging. HAProxy, however, has excellent
   logging for TCP, SSL and HTTPS. We leverage the flexibility of HAProxy's logging
   to improve our DDoS detection capabilities. We also want to uniquely identify
   requests in HAProxy and NodeJS, and correlate events, using a `unique-id`.
+
+Architecture
+------------
 
 Below is our target setup:
 
@@ -166,8 +193,6 @@ For our logging, we want the following:
 
 	log-format [%pid]\ [%Ts.%ms]\ %ac/%fc/%bc/%bq/%sc/%sq/%rc\ %Tq/%Tw/%Tc/%Tr/%Tt\ %tsc\ %ci:%cp\ %fi:%fp\ %si:%sp\ %ft\ %sslc\ %sslv\ %{+Q}r\ %ST\ %b:%s\ "%CC"\ "%hr"\ "%CS"\ "%hs"\ "%B\ bytes"\ %ID
 
-
-
 The format above will generate:
 
 .. code::
@@ -278,16 +303,154 @@ Cookies can be captures the same way:
 Rate limiting & DDoS protection
 -------------------------------
 
+One of the particularity of operating an infrastructure in AWS, is that control
+over the network is very limited. Techniques such as BGP blackholing are not
+available. And visibility over the layer 3 (IP) and 4 (TCP) is reduced. Building
+protection against DDoS means that we need to block traffic further down the
+stack, which consumes more resources. This is the main motivation for using ELBs
+in TCP mode with the PROXY protocol: it gives HAProxy low-level access to the
+TCP connection, and visibility of the client IP before parsing HTTP headers
+(like you would traditionally do with X-Forwarded-For).
+
+ELBs have limited resources, but simplify the management of public IPs in AWS.
+By offloading the SSL & HTTP processing to HAProxy, we reduce the pressure on
+ELB, while conserving the ability to manage the public endpoints through it.
+
+HAProxy maintains tons of detailed information on connections. One can use this
+information to accept, block or route connections. In the following section, we
+will discuss the use of ACLs and stick-tables to block clients that do not
+respect sane limits.
+
 Automated rate limiting
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-By default, HAProxy defines on stick table per backend. The table is named after
-the backend, so backend `nodejs-something` will have a table called
-`nodejs-something`.
+First, let's limit the connection rates at the TCP level. This will provide
+limited value, since a client could use HTTP keep-alive to keep one TCP
+connection open and inject millions of requests through it, but it's still a
+cheap level of defense that is easy to implement.
 
+The configuration below enable counters to track connections in a table where
+the key is the source IP of the client:
+
+.. code::
+
+	# Define a table that will store IPs associated with counters
+	stick-table type ip size 500k expire 30s store conn_cur,conn_rate(10s),http_req_rate(10s),http_err_rate(10s)
+
+	# Enable tracking of src IP in the stick-table
+	tcp-request content track-sc0 src
+
+Let's decompose the configuration above. First, we define a `stick-table` that
+is meant to store IP addresses as keys. We define a maximum size for this table
+of 500,000 IPs, and we tell HAProxy to expire the records after 30 seconds. If
+the table gets filled, HAProxy will delete records following the LRU logic.
+
+The `stick-table` will store a number of information associated with the IP
+address:
+
+- `conn_cur` is a counter of the concurrent connection count for this IP.
+
+- `conn_rate(10s)` is a sliding window that counts new TCP connections.
+
+- `http_req_rate(10s)` is a sliding window that counts HTTP requests
+
+- `http_err_rate(10s)` is a sliding window that counts HTTP errors triggered by
+  requests from that IP.
+
+By default, the stick table declaration doesn't do anything, we need to send
+data to it. This is what the `tcp-request content track-sc0 src` parameter does.
+
+Now that we have tracking in place, we can write ACLs that run tests against the
+content of the table. The examples below evaluate several of these counters
+against arbitary limits. Tune these to your needs.
+
+.. code::
+
+	# Reject the new connection if the client already has 100 opened
+	http-request set-header X-Haproxy-ACL over-100-active-connections if { src_conn_cur ge 100 }
+
+	# Reject the new connection if the client has opened more than 100 connections in 10 seconds
+	http-request set-header X-Haproxy-ACL over-100-connections-in-10-seconds if { src_conn_rate ge 100 }
+
+	# Reject the connection if the client has passed the HTTP error rate
+	http-request set-header X-Haproxy-ACL high-error-rate if { sc0_http_err_rate() gt 100 }
+
+	# Reject the connection if the client has passed the HTTP request rate
+	http-request set-header X-Haproxy-ACL high-request-rate if { sc0_http_req_rate() gt 500 }
+
+HAProxy provides a lot of flexibility on what can be tracked in a `stick-table`.
+Take a look at section `7.3.2. Fetching samples at Layer 4` from the doc to get
+a better idea.
+
+Querying tables state in real time
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Tables are named after the name of the frontend or backend they live in. Our
+frontend called `fx-https` will have a table called `fxa-https`, that can be
+queried through the stat socket:
+
+.. code::
+
+	# echo "show table fxa-https" | socat unix:/var/lib/haproxy/stats -
+	# table: fxa-https, type: ip, size:512000, used:1
+	0x1aa3358: key=1.10.2.10 use=1 exp=29957 conn_rate(10000)=43 conn_cur=1 http_req_rate(10000)=42 http_err_rate(10000)=42
+
+The line above shows a table entry for key `1.10.2.10`, which is a tracked IP
+address. The other entries on the line show the status of various counters that
+we defined in the configuration.
 
 Blacklists & Whitelists
 ~~~~~~~~~~~~~~~~~~~~~~~
+
+Blacklist and whitelists are simple lists of IP addresses that are checked by
+HAProxy as early on as possible. Blacklist are checked at the beginning of the
+TCP connection, which allows for early connection drops, and also means that
+blacklisting an IP always takes precedence over any other rule, including the
+whitelist.
+
+Whitelists are checked at the HTTP level, and allow to bypass ACLs and rate
+limiting.
+
+.. code::
+
+        # Blacklist: Deny access to some IPs before anything else is checked
+        tcp-request content reject if { src -f /etc/haproxy/blacklist.lst }
+
+        # Whitelist: Allow IPs to bypass the filters
+        http-request set-header X-Haproxy-ACL whitelisted if { src -f /etc/haproxy/whitelist.lst }
+        http-request allow if { src -f /etc/haproxy/whitelist.lst }
+
+List files can contain IP addresses or networks in CIDR format.
+
+.. code::
+
+	10.0.0.0/8
+	172.16.0.0/12
+	192.168.0.0/16
+	8.8.8.8
+
+List files are loaded into HAProxy at startup. If you add or remove IPs from a
+list, make sure to perform a soft reload.
+
+.. code:: bash
+
+	haproxy -f /etc/haproxy/haproxy.cfg -c && sudo haproxy -f /etc/haproxy/haproxy.cfg -sf $(pidof haproxy)
+
+Protect against slow clients (Slowloris attack)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Slowloris is an attack where a client very slowly sends requests to the server,
+forcing it to allocate resources to that client that are only not used. This
+attack is commonly used in DDoS, by clients that send their requests characters
+by characters. HAProxy can block these clients, by allocating a maximum amount
+of time a client can take to send a full request. This is done with the `timeout
+http-request` parameter.
+
+.. code::
+
+    # disconnect slow handshake clients early, protect from
+    # resources exhaustion attacks
+    timeout http-request    5s
 
 URL filtering with ACLs
 -----------------------
