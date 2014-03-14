@@ -66,14 +66,6 @@ Below is our target setup:
 .. image:: haproxy-aws-arch-diagram.png
    :alt: architecture diagram
 
-Building process
-----------------
-The following script builds haproxy with statically linked OpenSSL and PCRE
-support.
-
-.. include:: build_static_haproxy.sh
-	:code: bash
-
 PROXY protocol between ELB and HAProxy
 --------------------------------------
 
@@ -191,13 +183,13 @@ For our logging, we want the following:
 
 .. code::
 
-	log-format [%pid]\ [%Ts.%ms]\ %ac/%fc/%bc/%bq/%sc/%sq/%rc\ %Tq/%Tw/%Tc/%Tr/%Tt\ %tsc\ %ci:%cp\ %fi:%fp\ %si:%sp\ %ft\ %sslc\ %sslv\ %{+Q}r\ %ST\ %b:%s\ "%CC"\ "%hr"\ "%CS"\ "%hs"\ "%B\ bytes"\ %ID
+	log-format [%pid]\ [%Ts.%ms]\ %ac/%fc/%bc/%bq/%sc/%sq/%rc\ %Tq/%Tw/%Tc/%Tr/%Tt\ %tsc\ %ci:%cp\ %fi:%fp\ %si:%sp\ %ft\ %sslc\ %sslv\ %{+Q}r\ %ST\ %b:%s\ "%CC"\ "%hr"\ "%CS"\ "%hs"\ req_size=%U\ resp_size=%B
 
 The format above will generate:
 
 .. code::
 
-	Mar 12 21:18:22 localhost haproxy[23755]: [23755] [1394659102.263] 2/1/0/0/1/0/0 97/0/0/6/103 ---- 1.10.3.10:36314 10.151.122.228:443 127.0.0.1:55555 fxa-https~ ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 "GET /v1/somethingsomething HTTP/1.1" 404 acl-logger:localhost "-" "{||Mozilla/5.0 (X11; Linux x86_64; rv:30.0) Gecko/20100101 Firefox/}" "-" "" "804 bytes" 47B4176E:8DDA_0A977AE4:01BB_5320CF1E_0005:5CCB
+	Mar 14 17:14:51 localhost haproxy[14887]: [14887] [1394817291.250] 10/5/2/0/3/0/0 48/0/0/624/672 ---- 1.10.2.10:35701 10.151.122.228:443 127.0.0.1:8000 logger - - "GET /v1/ HTTP/1.0" 404 fxa-nodejs:nodejs1 "-" "{||ApacheBench/2.3|over-100-active-connections,over-100-connections-in-10-seconds,high-error-rate,high-request-rate,|47B4176E:8B75_0A977AE4:01BB_5323390B_31E0:3A27}" "-" "" ireq_size=592 resp_size=787
 
 The log-format contains very detailed information on the connection itself, but
 also on the state of haproxy itself. Below is a description of the fields we
@@ -231,8 +223,8 @@ used in our custom log format.
 * `%hr`: captured request headers
 * `%CS`: captured response cookies
 * `%hs`: captured response headers
+* `%U`: bytes read from the client (request size)
 * `%B`: bytes read from server to client (response size)
-* `%ID`: Unique ID generated for each request
 
 For more details on the available logging variables, see the HAProxy
 configuration, under `8.2.4. Custom log format`.
@@ -262,8 +254,8 @@ This will add an ID that is composed of hexadecimal variables, taken from the
 client IP and port, frontend IP and port, timestamp, request counter and PID.
 An example of generated ID is **485B7525:CB2F_0A977AE4:01BB_5319CB0C_000D:27C0**.
 
-The Unique ID is logged and added to the request headers passed to the backend
-in the `X-Unique-ID` header.
+The Unique ID is added to the request headers passed to the backend in the
+`X-Unique-ID` header. We will also capture it in the logs, as a request header.
 
  ::
 
@@ -283,15 +275,15 @@ Capturing headers and cookies
 
 In the log format, we defined fields for the request and response headers and
 cookies. But, by default, this fields will show empty in the logs. In order to
-log headers and cookies, special `capture` parameters must be set in the
+log headers and cookies, the `capture` parameters must be set in the
 frontend.
 
-Here's how we can capture the user-agent and referrer sent by the client in the
-HTTP request.
+Here is how we can capture headers sent by the client in the HTTP request.
 
 .. code::
 
 	capture request header Referrer len 64
+    capture request header Content-Length len 10
 	capture request header User-Agent len 64
 
 Cookies can be captures the same way:
@@ -299,6 +291,97 @@ Cookies can be captures the same way:
 .. code::
 
 	capture cookie mycookie123=  len 32
+
+HAProxy will also add custom headers to the request, before passing it to the
+backend. However, added headers don't get logged, because the addition happens
+after the capture operation. To fix this issue, we are going to create a new
+frontend dedicated to logging.
+
+Logging in a separate frontend
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+During processing of the request, we added custom headers, and we want these
+headers to appear in the logs. One solution is to route all the request to a
+secondary frontend that only does logging, and blocking or forwarding.
+
+Classic setup:
+
+ ::
+
+                    {logging}
+     request        +--------------+       +---------------+
+    +-------------->|frontend      |+----->|backend        |      +---------+
+                    |   fxa-https  |       |    fxa-nodejs |+---->|         |
+                    +--------------+       +---------------+      | NodeJS  |
+                                                                  |         |
+                                                                  +---------+
+
+Setup with separate logging frontend:
+
+ ::
+
+                    {no logging}
+     request        +--------------+       +---------------+
+    +-------------->|frontend      |       |backend        |      +---------+
+                    |   fxa-https  |       |    fxa-nodejs |+---->|         |
+                    +--------------+       +---------------+      | NodeJS  |
+                           +                     ^                |         |
+                           |                     |                +---------+
+                           |                     |
+                    +------v-------+       +-----+--------+
+                    |backend       |+----->|frontend      |
+                    |     logger   |       |   logger     |
+                    +--------------+       +--------------+
+                                             {logging}
+
+
+At the end of the configuration of frontend `fxa-https`, instead of sending
+requests to backend `fxa-nodejs`, we send them to backend `logger`.
+
+.. code::
+
+	frontend fxa-https
+		...
+		# Don't log here, log into logger frontend
+		no log
+		default_backend logger
+
+Then we declare a backend and a frontend for `logger`:
+
+.. code::
+
+	backend logger
+		server localhost localhost:55555 send-proxy
+
+	# frontend use to log acl activity
+	frontend logger
+		bind localhost:55555 accept-proxy
+
+		...
+
+		capture request header Referrer len 64
+		capture request header Content-Length len 10
+		capture request header User-Agent len 64
+		capture request header X-Haproxy-ACL len 256
+		capture request header X-Unique-ID len 64
+
+		# if previous ACL didn't pass and aren't whitelisted
+		acl whitelisted req.fhdr(X-Haproxy-ACL) -m beg whitelisted,
+		acl fail-validation req.fhdr(X-Haproxy-ACL) -m found
+		block if !whitelisted fail-validation
+
+		default_backend fxa-nodejs
+
+Note the use of `send-proxy` and `accept-proxy` between the logger backend and
+frontend, allowing to keep the information about the client IP.
+
+**Isn't this slow and inefficient?**
+
+Well, obviously, routing request through HAProxy twice isn't the most elegant
+way of proxying. But in practice, this approach adds minimal overhead. Linux and
+HAProxy support TCP splicing, which provides zero-copy transfer of data between
+TCP sockets. When HAProxy forward the request to the logger socket, there is, in
+fact, no transfer of data at the kernel level. Benchmark it, it's fast!
 
 Rate limiting & DDoS protection
 -------------------------------
@@ -324,11 +407,6 @@ respect sane limits.
 Automated rate limiting
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-First, let's limit the connection rates at the TCP level. This will provide
-limited value, since a client could use HTTP keep-alive to keep one TCP
-connection open and inject millions of requests through it, but it's still a
-cheap level of defense that is easy to implement.
-
 The configuration below enable counters to track connections in a table where
 the key is the source IP of the client:
 
@@ -340,8 +418,8 @@ the key is the source IP of the client:
 	# Enable tracking of src IP in the stick-table
 	tcp-request content track-sc0 src
 
-Let's decompose the configuration above. First, we define a `stick-table` that
-is meant to store IP addresses as keys. We define a maximum size for this table
+Let's decompose this configuration. First, we define a `stick-table` that
+stores IP addresses as keys. We define a maximum size for this table
 of 500,000 IPs, and we tell HAProxy to expire the records after 30 seconds. If
 the table gets filled, HAProxy will delete records following the LRU logic.
 
@@ -350,12 +428,14 @@ address:
 
 - `conn_cur` is a counter of the concurrent connection count for this IP.
 
-- `conn_rate(10s)` is a sliding window that counts new TCP connections.
+- `conn_rate(10s)` is a sliding window that counts new TCP connections over a 10
+  seconds period
 
-- `http_req_rate(10s)` is a sliding window that counts HTTP requests
+- `http_req_rate(10s)` is a sliding window that counts HTTP requests over a 10
+  seconds period
 
 - `http_err_rate(10s)` is a sliding window that counts HTTP errors triggered by
-  requests from that IP.
+  requests from that IP over a 10 seconds period
 
 By default, the stick table declaration doesn't do anything, we need to send
 data to it. This is what the `tcp-request content track-sc0 src` parameter does.
@@ -367,16 +447,16 @@ against arbitary limits. Tune these to your needs.
 .. code::
 
 	# Reject the new connection if the client already has 100 opened
-	http-request set-header X-Haproxy-ACL over-100-active-connections if { src_conn_cur ge 100 }
+	http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]over-100-active-connections, if { src_conn_cur ge 100 }
 
 	# Reject the new connection if the client has opened more than 100 connections in 10 seconds
-	http-request set-header X-Haproxy-ACL over-100-connections-in-10-seconds if { src_conn_rate ge 100 }
+	http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]over-100-connections-in-10-seconds, if { src_conn_rate ge 100 }
 
 	# Reject the connection if the client has passed the HTTP error rate
-	http-request set-header X-Haproxy-ACL high-error-rate if { sc0_http_err_rate() gt 100 }
+	http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]high-error-rate, if { sc0_http_err_rate() gt 100 }
 
 	# Reject the connection if the client has passed the HTTP request rate
-	http-request set-header X-Haproxy-ACL high-request-rate if { sc0_http_req_rate() gt 500 }
+	http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]high-request-rate, if { sc0_http_req_rate() gt 500 }
 
 HAProxy provides a lot of flexibility on what can be tracked in a `stick-table`.
 Take a look at section `7.3.2. Fetching samples at Layer 4` from the doc to get
@@ -386,7 +466,7 @@ Querying tables state in real time
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Tables are named after the name of the frontend or backend they live in. Our
-frontend called `fx-https` will have a table called `fxa-https`, that can be
+frontend called `fxa-https` will have a table called `fxa-https`, that can be
 queried through the stat socket:
 
 .. code::
@@ -413,12 +493,12 @@ limiting.
 
 .. code::
 
-        # Blacklist: Deny access to some IPs before anything else is checked
-        tcp-request content reject if { src -f /etc/haproxy/blacklist.lst }
+	# Blacklist: Deny access to some IPs before anything else is checked
+	tcp-request content reject if { src -f /etc/haproxy/blacklist.lst }
 
-        # Whitelist: Allow IPs to bypass the filters
-        http-request set-header X-Haproxy-ACL whitelisted if { src -f /etc/haproxy/whitelist.lst }
-        http-request allow if { src -f /etc/haproxy/whitelist.lst }
+	# Whitelist: Allow IPs to bypass the filters
+	http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]whitelisted, if { src -f /etc/haproxy/whitelist.lst }
+	http-request allow if { src -f /etc/haproxy/whitelist.lst }
 
 List files can contain IP addresses or networks in CIDR format.
 
@@ -450,12 +530,12 @@ http-request` parameter.
 
     # disconnect slow handshake clients early, protect from
     # resources exhaustion attacks
-    timeout http-request    5s
+    timeout http-request 5s
 
 URL filtering with ACLs
 -----------------------
 
-HAProxy has the ability to instead requests before passing them to the backend.
+HAProxy has the ability to inspect requests before passing them to the backend.
 This is limited to query strings, and doesn't support inspecting the body of a
 POST request. But we can already leverage this to filter out unwanted traffic.
 
@@ -463,40 +543,9 @@ The first thing we need, is a list of endpoints sorted by HTTP method. This can
 be obtained from the web application directly. Note that some endpoints, such as
 `__heartbeat__` should be limited to HAProxy, and thus blocked from clients.
 
-In addition to matching an exact path, you may want to match on URL parameters.
-This will be discussed in the next section
-
-.. code:: bash
-
-	$ grep -A 1 -R "method: 'GET'," ~/git/fxa-auth-server/routes/* | grep "path: " | awk '{print $3}' | cut -d "'" -f 2 | sort
-	/account/devices
-	/account/keys
-	/recovery_email/status
-	/
-	/__heartbeat__
-	/.well-known/browserid
-	/.well-known/browserid/sign_in.html
-	/.well-known/browserid/provision.html
-	/verify_email
-	/complete_reset_password
-
-	$ grep -A 1 -R "method: 'POST'," ~/git/fxa-auth-server/routes/* | grep "path: " | awk '{print $3}' | cut -d "'" -f 2 | sort
-	/account/create
-	/account/login
-	/recovery_email/resend_code
-	/recovery_email/verify_code
-	/account/reset
-	/account/destroy
-	/password/change/start
-	/password/change/finish
-	/password/forgot/send_code
-	/password/forgot/resend_code
-	/password/forgot/verify_code
-	/session/destroy
-	/certificate/sign
-	/get_random_bytes
-
-We store these endpoints in two files:
+For now, let's ignore GET URL parameters, and only build a list of request
+paths, that we store in two files: one for GET requests, and one for POST
+requests.
 
 `get_endpoints.lst`
 
@@ -520,6 +569,10 @@ method takes a condition, as described in the Haproxy documentation, section
 
 	# block requests that don't match the predefined endpoints
 	block unless METH_GET valid-get or METH_POST valid-post
+
+`block` does the job, and return a 403 to the client. But if you want more
+visibility on ACL activity, you may want to use a custom header as describe
+later in this section.
 
 Filtering URL parameters on GET requests
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -554,7 +607,7 @@ For example, take the NodeJS endpoint below:
     },
 
 This endpoints receives requests on `/verify_email` with the parameters `code`,
-a 32 character hexadecimal, `uid`, a 64 character hexadecimal, `service`, a 16
+a 32 character hexadecimal, `uid`, a 32 character hexadecimal, `service`, a 16
 character string, and `redirectTo`, a FQDN. However, only `code` and `uid` are
 required.
 
@@ -619,107 +672,85 @@ configuration. Instead of using `block` statements in the ACLs, we can insert a
 header with a description of the blocking decision. This header will be logged,
 and can be analyzed to verify that no legitimate traffic would be blocked.
 
-However, HAProxy seem unable to log request header that it has set itself,
-probably because the `capture request header` operation is performed before the
-`http-request set-header` one. So we need a workaround.
+As discussed in `Logging in a separate frontend`, HAProxy is unable to log
+request header that it has set itself. So make sure to log in a separate
+frontend if you use this technique.
 
-The configuration below uses a custom header `X-Haproxy-ACL` which is set to the
-string `pass` by default. If an ACL matches, the string is changed to the name
-of the ACL that matched.
-At the end of the ACL evaluation, if the value of this header is not `pass`, the
-request is sent to another backend that the default one. This backend, called
-`acl-logger` loops back to a frontend also called `acl-logger`. The sole purpose
-of these two is to pass the request through HAProxy again, and log the
-`X-Haproxy-ACL` header. It's a hack, but it works. The downside is we know have
-two access logs for this one request, because it passed HAProxy twice.
+The configuration below uses a custom header `X-Haproxy-ACL`. If an ACL matches,
+the header is set to the name of the ACL that matched. If several ACLs match,
+each ACL name is appended to the header, and separated by a comma.
 
- ::
+At the end of the ACL evaluation, if this header is present in the request, we
+know that the request should be blocked.
 
-                    {primary logging}
-     request        +--------------+       +---------------+
-    +-------------->|frontend      |+----->|backend        |      +---------+
-                    |   fxa-https  |       |    fxa-nodejs |+---->|         |
-                    +--------------+       +---------------+      |         |
-                           +                     ^                |         |
-                           |                     |                | NodeJS  |
-                           |                     |                |         |
-                    +------v-------+       +-----+--------+       |         |
-                    |backend       |+----->|frontend      |       |         |
-                    |   acl-logger |       |   acl-logger |       |         |
-                    +--------------+       +--------------+       +---------+
-                                         {secondary logging}
-
-In the main frontend, we add the following logic:
+In the `fxa-https` frontend, we replace the `block` paramameters with the
+following logic:
 
 .. code::
 
 	# ~~~ Requests validation using ACLs ~~~
-	# we use a custom HTTP header to store the result of HAProxy's ACLs. The
-	# default value is set to `pass`, and modified by ACLs below
-	http-request set-header X-Haproxy-ACL pass
+	# block requests that don't match the predefined endpoints
+	acl valid-get path -f /etc/haproxy/get_endpoints.lst
+	acl valid-post path -f /etc/haproxy/post_endpoints.lst
+	http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]invalid-endpoint, unless METH_GET valid-get or METH_POST valid-post
 
-	# block content-length larger than 5kB
+	# block requests on verify_email that do not have the correct params
+	acl endpoint-verify_email path /v1/verify_email
+	acl param-code urlp_reg(code) [0-9a-fA-F]{1,32}
+	acl param-uid urlp_reg(uid) [0-9a-fA-F]{1,32}
+	http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]invalid-parameters, if endpoint-verify_email !param-code or endpoint-verify_email !param-uid
+
+	# block requests on complete_reset_password that do not have the correct params
+	acl endpoint-complete_reset_password path /v1/complete_reset_password
+	acl param-email urlp_reg(email) -i ^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,4}$
+	acl param-token urlp_reg(token) [0-9a-fA-F]{1,64}
+	http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]invalid-parameters, if endpoint-complete_reset_password !param-email or endpoint-complete_reset_password !param-token or endpoint-complete_reset_password !param-code
+
+	# block content-length larger than 500kB
 	acl request-too-big hdr_val(content-length) gt 5000
-	http-request set-header X-Haproxy-ACL request-too-big if METH_POST request-too-big
+	http-request add-header X-Haproxy-ACL %[req.fhdr(X-Haproxy-ACL,-1)]request-too-big, if METH_POST request-too-big
 
-	# if previous ACL didn't pass, sent to logger backend
-	acl pass-acl-validation req.hdr(X-Haproxy-ACL) -m str pass
-	use_backend acl-logger if !pass-acl-validation
-
-Then, we create a new pair of frontend/backend to handle these requests:
-
-.. code::
-
-	frontend acl-logger
-			bind localhost:55555
-			capture request header X-Haproxy-ACL len 64
-			capture request header X-Unique-ID len 64
-			default_backend fxa-nodejs
-
-	backend acl-logger
-			server localhost localhost:55555
-
-In the logs, we know have two log entries for each request that doesn't pass our
-ACLs, and we can use the `Unique ID` value to cross-reference them.
-In the sample below, the first log line indicates `invalid-endpoint` in the
-captured headers, which is the name of the ACL that didn't pass.
+Note the `%[req.fhdr(X-Haproxy-ACL,-1)]` parameter, that retrieves the value of
+the latest occurence of the `X-Haproxy-ACL` header, so we can append to it and
+store it again. However, this will create multiple headers if more than one ACL
+is matched, but that's OK because:
+- we can delete them before sending the request to the backend, using `reqdel`
+- the logging directive `capture request header` will only log the last occurence
 
 .. code::
 
-	Mar 12 21:32:35 localhost haproxy[23755]: [23755] [1394659955.945] 2/1/0/0/1/0/0 0/0/0/4/5 ---- 127.0.0.1:48120 127.0.0.1:55555 127.0.0.1:8000 acl-logger - - "GET /v1/somethingsomething HTTP/1.1" 404 fxa-nodejs:nodejs1 "-" "{invalid-endpoint|47B4176E:8E5E_0A977AE4:01BB_5320D273_03FF:5CCB}" "-" "" "826 bytes"
+	X-Haproxy-ACL: over-100-active-connections,
+	X-Haproxy-ACL: over-100-active-connections,over-100-connections-in-10-seconds,
+	X-Haproxy-ACL: over-100-active-connections,over-100-connections-in-10-seconds,high-error-rate,
+	X-Haproxy-ACL: over-100-active-connections,over-100-connections-in-10-seconds,high-error-rate,high-request-rate,
 
-	Mar 12 21:32:35 localhost haproxy[23755]: [23755] [1394659955.850] 2/1/0/0/1/0/0 94/0/0/5/99 ---- 1.10.2.10:36446 10.151.122.228:443 127.0.0.1:55555 fxa-https~ ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 "GET /v1/somethingsomething HTTP/1.1" 404 acl-logger:localhost "-" "{||Mozilla/5.0 (X11; Linux x86_64; rv:30.0) Gecko/20100101 Firefox/}" "-" "" "802 bytes" 47B4176E:8E5E_0A977AE4:01BB_5320D273_03FF:5CCB
-
-To make the logs a bit easier to read, we can enable the PROXY protocol on the
-`acl-logger` backend, such that the log lines will reflect the public IP of the
-client.
-
-On the backend and frontend for ACL logger, add the option to send and accept
-the PROXY header.
+Then, in the logger frontend, we check the value of the header, and block if
+needed.
 
 .. code::
 
-	frontend acl-logger
-			bind localhost:55555 accept-proxy
-			capture request header X-Haproxy-ACL len 64
-			capture request header X-Unique-ID len 64
-			default_backend fxa-nodejs
-
-	backend acl-logger
-			server localhost localhost:55555 send-proxy
-
-Now both log lines reflect the public IP of the client **1.10.2.10**.
-
-.. code::
-
-	Mar 13 14:29:41 localhost haproxy[17922]: [17922] [1394720981.363] 2/1/0/0/1/0/0 0/0/0/6/6 ---- 1.10.2.10:41315 10.151.122.228:443 127.0.0.1:8000 acl-logger - - "GET /v1/somethingsomething HTTP/1.1" 404 fxa-nodejs:nodejs1 "-" "{invalid-endpoint|47B4176E:A163_0A977AE4:01BB_5321C0D5_000D:4602}" "-" "" "829 bytes"
-	Mar 13 14:29:41 localhost haproxy[17922]: [17922] [1394720981.268] 2/1/0/0/1/0/0 95/0/0/7/102 ---- 1.10.2.10:41315 10.151.122.228:443 127.0.0.1:55555 fxa-https~ ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 "GET /v1/somethingsomething HTTP/1.1" 404 acl-logger:localhost "-" "{||Mozilla/5.0 (X11; Linux x86_64; rv:30.0) Gecko/20100101 Firefox/}" "-" "" "805 bytes" 47B4176E:A163_0A977AE4:01BB_5321C0D5_000D:4602
+	# frontend use to log acl activity
+	frontend logger
+		...
+		# if previous ACL didn't pass, and IP isn't whitelisted, block the request
+		acl whitelisted req.fhdr(X-Haproxy-ACL) -m beg whitelisted,
+		acl fail-validation req.fhdr(X-Haproxy-ACL) -m found
+		block if !whitelisted fail-validation
 
 HAProxy management
 ------------------
 
-Stat socket
-~~~~~~~~~~~
+Enabling the stat socket
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Collecting statistics
+~~~~~~~~~~~~~~~~~~~~~
+
+Analyzing errors
+~~~~~~~~~~~~~~~~
+
+Parsing performance metrics from the logs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Soft reload
 ~~~~~~~~~~~
@@ -745,7 +776,38 @@ configuration. The logs will show the reload:
 Full HAProxy configuration
 --------------------------
 
-.. include :: haproxy.cfg
+.. include:: haproxy.cfg
    :code: bash
 
+Building process
+----------------
 
+Static build
+~~~~~~~~~~~~
+The following script builds haproxy with statically linked OpenSSL and PCRE
+support.
+
+.. include:: build_static_haproxy.sh
+	:code: bash
+
+Dynamic build
+~~~~~~~~~~~~~
+Same as above, but links to PCRE and OpenSSL dynamically.
+
+.. include:: build_dynamic_haproxy.sh
+   :code: bash
+
+RPM build
+~~~~~~~~~
+Using the spec file and bash scripts below, we can build a RPM package using
+for the latest development version of HAProxy.
+
+`build_rpm.sh`
+
+.. include:: build_rpm.sh
+   :code: bash
+
+`haproxy.spec`
+
+.. include:: haproxy.spec
+   :code: bash
