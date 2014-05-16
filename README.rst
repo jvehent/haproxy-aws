@@ -131,8 +131,88 @@ The HAProxy frontend listens on port 443 with a SSL configuration, as follow:
 
 Note the `accept-proxy` parameter of the bind command. This option tells HAProxy
 that whatever sits in front of it will append the PROXY header to TCP payloads.
-The rest of the SSL configuration isn't covered here, but in the HAProxy SSL
-section.
+
+SSL/TLS Configuration
+~~~~~~~~~~~~~~~~~~~~~
+
+HAProxy takes a SSL configuration on the `bind` line directly. The configuration
+requires a set of certificates and private key, and a ciphersuite.
+
+.. code::
+
+	bind 0.0.0.0:443 accept-proxy ssl crt /etc/haproxy/bundle.pem ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-DSS-AES128-GCM-SHA256:kEDH+AESGCM:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA256:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-SHA:DHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:ECDHE-RSA-RC4-SHA:ECDHE-ECDSA-RC4-SHA:AES128:AES256:RC4-SHA:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!3DES:!MD5:!PSK
+
+Unlike most servers (Apache, Nginx, ...), HAProxy takes certificates and keys
+into a single file, here named `bundle.pem`. In this file are concatenated the
+server private key, the server public certificate, the CA intermediate
+certificate (if any) and a DH parameter (if any). For more information on DH
+parameters, see https://wiki.mozilla.org/Security/Server_Side_TLS .
+
+In the sample below, components of `bundle.pem` are concatenated as follow:
+
+- client certificate signed by CA XYZ
+- client private key
+- public DH parameter (2048 bits)
+- intermediate certificate of CA XYZ
+
+.. code::
+
+	-----BEGIN CERTIFICATE-----
+	MIIGYjCCBUqgAwIBAgIDDD5PMA0GCSqGSIb3DQEBBQUAMIGMMQswCQYDVQQGEwJJ
+	...
+	ej2w/mPv
+	-----END CERTIFICATE-----
+	-----BEGIN RSA PRIVATE KEY-----
+	MIIEpAIBAAKCAQEAvJQqCjE4I63S3kR9KV0EG9e/lX/bZxa/2QVvZGi9/Suj65nD
+	...
+	RMSEpg+wuIVnKUi6KThiMKyXfZaTX7BDuR/ezE/JHs1TN5Hkw43TCQ==
+	-----END RSA PRIVATE KEY-----
+	-----BEGIN DH PARAMETERS-----
+	MIICCAKCAgEA51RNlgY6j9MhmDURTpzydlJOsjk/TpU1BiY028SXAppuKJeFcx9S
+	...
+	HgHeuQQRjuv+h+Wf4dBe2f/fU5w9Osvq299vtcCjvQ7EtZTKT8RfvIMCAQI=
+	-----END DH PARAMETERS-----
+	-----BEGIN CERTIFICATE-----
+	MIIGNDCCBBygAwIBAgIBGDANBgkqhkiG9w0BAQUFADB9MQswCQYDVQQGEwJJTDEW
+	...
+	0q6Dp6jOW6c=
+	-----END CERTIFICATE-----
+
+The rest of the `bind` line is a ciphersuite, taken from
+https://wiki.mozilla.org/Security/Server_Side_TLS .
+
+We can verify the configuration using `cipherscan`. Below is the expected output
+for our configuration:
+
+.. code:: bash
+
+	$ ./cipherscan haproxytest1234.elb.amazonaws.com
+	.........................
+	prio  ciphersuite                  protocols                    pfs_keysize
+	1     ECDHE-RSA-AES128-GCM-SHA256  SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+	2     ECDHE-RSA-AES256-GCM-SHA384  SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+	3     DHE-RSA-AES128-GCM-SHA256    SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+	4     DHE-RSA-AES256-GCM-SHA384    SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+	5     ECDHE-RSA-AES128-SHA256      SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+	6     ECDHE-RSA-AES128-SHA         SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+	7     ECDHE-RSA-AES256-SHA384      SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+	8     ECDHE-RSA-AES256-SHA         SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+	9     DHE-RSA-AES128-SHA256        SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+	10    DHE-RSA-AES128-SHA           SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+	11    DHE-RSA-AES256-SHA256        SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+	12    DHE-RSA-AES256-SHA           SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+	13    AES128-GCM-SHA256            SSLv3,TLSv1,TLSv1.1,TLSv1.2
+	14    AES256-GCM-SHA384            SSLv3,TLSv1,TLSv1.1,TLSv1.2
+	15    ECDHE-RSA-RC4-SHA            SSLv3,TLSv1,TLSv1.1,TLSv1.2  ECDH,P-256,256bits
+	16    AES128-SHA256                SSLv3,TLSv1,TLSv1.1,TLSv1.2
+	17    AES128-SHA                   SSLv3,TLSv1,TLSv1.1,TLSv1.2
+	18    AES256-SHA256                SSLv3,TLSv1,TLSv1.1,TLSv1.2
+	19    AES256-SHA                   SSLv3,TLSv1,TLSv1.1,TLSv1.2
+	20    RC4-SHA                      SSLv3,TLSv1,TLSv1.1,TLSv1.2
+	21    DHE-RSA-CAMELLIA256-SHA      SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+	22    CAMELLIA256-SHA              SSLv3,TLSv1,TLSv1.1,TLSv1.2
+	23    DHE-RSA-CAMELLIA128-SHA      SSLv3,TLSv1,TLSv1.1,TLSv1.2  DH,2048bits
+	24    CAMELLIA128-SHA              SSLv3,TLSv1,TLSv1.1,TLSv1.2
 
 Healthchecks between ELB and HAProxy
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -163,6 +243,10 @@ disable SSL on the health frontend.
 		acl backend_dead nbsrv(nodejs) lt 1
 		monitor-uri /haproxy_status
 		monitor fail if backend_dead
+
+*(note: we could also use ACLs in HAProxy to only expect the PROXY header on
+certain source IPs, but the approach of a dedicated health frontend seems
+cleaner)*
 
 ELB Logging
 -----------
