@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+haproxyversion="1.5-dev25"
+
 echo Installing dependencies
 sudo yum -y install rpmdevtools pcre-devel openssl-devel gcc make
 
@@ -10,7 +12,7 @@ echo Initializing build dir
 rpmdev-setuptree
 
 echo Download HAProxy source
-wget http://haproxy.1wt.eu/download/1.5/src/devel/haproxy-1.5-dev22.tar.gz -O ~/rpmbuild/SOURCES/haproxy-1.5-dev22.tar.gz
+wget http://haproxy.1wt.eu/download/1.5/src/devel/haproxy-$haproxyversion.tar.gz -O ~/rpmbuild/SOURCES/haproxy-$haproxyversion.tar.gz
 
 echo Copying SPEC file over to build dir
 cp haproxy.spec ~/rpmbuild/SPECS/

@@ -7,7 +7,7 @@
 # rpmbuild -bb  ./rpmbuild/SPECS/haproxy.spec
 
 %define version 1.5
-%define dev_rel dev22
+%define dev_rel dev25
 %define release 1
 
 Summary: HA-Proxy is a TCP/HTTP reverse proxy for high availability environments
@@ -88,5 +88,5 @@ fi
 %attr(0755,root,root) %config %{_sysconfdir}/rc.d/init.d/%{name}
 
 %changelog
-* Fri Mar 14 2014 Julien Vehent <jvehent@mozilla.com>
-- Build RPM on 1.5-dev22. see changelog at http://haproxy.1wt.eu/git?p=haproxy.git;a=log
+* Thu May 15 2014 Julien Vehent <jvehent@mozilla.com>
+- Build RPM. see changelog at http://haproxy.1wt.eu/git?p=haproxy.git;a=log
