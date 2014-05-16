@@ -868,30 +868,39 @@ Building process
 
 Static build
 ~~~~~~~~~~~~
-The following script builds haproxy with statically linked OpenSSL and PCRE
-support.
+The script `build_static_haproxy.sh`_ builds haproxy with statically linked
+OpenSSL and PCRE support.
+
+.. _`build_static_haproxy.sh`: build_static_haproxy.sh
 
 .. include:: build_static_haproxy.sh
 	:code: bash
 
 Dynamic build
 ~~~~~~~~~~~~~
-Same as above, but links to PCRE and OpenSSL dynamically.
+The script `build_dynamic_haproxy.sh`_ does the same as above, but links to
+PCRE and OpenSSL dynamically.
+
+.. _`build_dynamic_haproxy.sh`: build_dynamic_haproxy.sh
 
 .. include:: build_dynamic_haproxy.sh
    :code: bash
 
 RPM build
 ~~~~~~~~~
-Using the spec file and bash scripts below, we can build a RPM package using
-for the latest development version of HAProxy.
+Using the spec file in `haproxy.spec`_ and bash scripts in `build_rpm.sh`_,
+we can build a RPM package using for the latest development version of HAProxy.
 
-`build_rpm.sh`
+.. _`haproxy.spec`: haproxy.spec
 
-.. include:: build_rpm.sh
-   :code: bash
+.. _`build_rpm.sh`: build_rpm.sh
 
 `haproxy.spec`
 
 .. include:: haproxy.spec
+   :code: bash
+
+`build_rpm.sh`
+
+.. include:: build_rpm.sh
    :code: bash
