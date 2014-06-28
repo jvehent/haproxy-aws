@@ -452,7 +452,7 @@ Then we declare a backend and a frontend for `logger`:
 		# if previous ACL didn't pass and aren't whitelisted
 		acl whitelisted req.fhdr(X-Haproxy-ACL) -m beg whitelisted,
 		acl fail-validation req.fhdr(X-Haproxy-ACL) -m found
-		block if !whitelisted fail-validation
+		http-request deny if !whitelisted fail-validation
 
 		default_backend fxa-nodejs
 
@@ -641,7 +641,7 @@ requests.
 .. include :: post_endpoints.lst
    :code: bash
 
-In the HAProxy configuration, we can build ACLs around these files. The `block`
+In the HAProxy configuration, we can build ACLs around these files. The `http-request deny`
 method takes a condition, as described in the Haproxy documentation, section
 `7.2. Using ACLs to form conditions`.
 
@@ -652,10 +652,10 @@ method takes a condition, as described in the Haproxy documentation, section
 	acl valid-post path -f /etc/haproxy/post_endpoints.lst
 
 	# block requests that don't match the predefined endpoints
-	block unless METH_GET valid-get or METH_POST valid-post
+	http-request deny unless METH_GET valid-get or METH_POST valid-post
 
-`block` does the job, and return a 403 to the client. But if you want more
-visibility on ACL activity, you may want to use a custom header as describe
+`http-request deny` does the job, and return a 403 to the client. But if you want
+more visibility on ACL activity, you may want to use a custom header as describe
 later in this section.
 
 Filtering URL parameters on GET requests
@@ -704,7 +704,7 @@ requests on this endpoint that do not match our prerequisite.
 	acl endpoint-verify_email path /verify_email
 	acl param-code urlp_reg(code) [0-9a-fA-F]{1,32}
 	acl param-uid urlp_reg(uid) [0-9a-fA-F]{1,32}
-	block if endpoint-verify_email !param-code or endpoint-verify_email !param-uid
+	http-request deny if endpoint-verify_email !param-code or endpoint-verify_email !param-uid
 
 The follow request will be accepted, everything else will be rejected with a
 HTTP error 403.
@@ -721,9 +721,9 @@ example that matches an email addresses using case-insensitive regex:
 	acl endpoint-complete_reset_password path /complete_reset_password
 	acl param-email urlp_reg(email) -i ^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,4}$
 	acl param-token urlp_reg(token) [0-9a-fA-F]{1,64}
-	block if endpoint-complete_reset_password !param-email or endpoint-complete_reset_password !param-token or endpoint-complete_reset_password !param-code
+	http-request deny if endpoint-complete_reset_password !param-email or endpoint-complete_reset_password !param-token or endpoint-complete_reset_password !param-code
 
-Note that we didn't redefine `param-code` when we reused it in the `block`
+Note that we didn't redefine `param-code` when we reused it in the `http-request deny`
 command. This is because ACL are defined globally for a frontend, and can
 be reused multiple times.
 
@@ -745,16 +745,17 @@ text).
 
 	# match content-length larger than 5kB
 	acl request-too-big hdr_val(content-length) gt 5000
-	block if METH_POST request-too-big
+	http-request deny if METH_POST request-too-big
 
 Marking instead of blocking
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Blocking requests may be the preferred behavior in production, but only after a
 grace period that allows you to build a traffic profile, and fine tune your
-configuration. Instead of using `block` statements in the ACLs, we can insert a
-header with a description of the blocking decision. This header will be logged,
-and can be analyzed to verify that no legitimate traffic would be blocked.
+configuration. Instead of using `http-request deny` statements in the ACLs, we
+can insert a header with a description of the blocking decision. This header
+will be logged, and can be analyzed to verify that no legitimate traffic would
+be blocked.
 
 As discussed in `Logging in a separate frontend`, HAProxy is unable to log
 request header that it has set itself. So make sure to log in a separate
@@ -767,7 +768,7 @@ each ACL name is appended to the header, and separated by a comma.
 At the end of the ACL evaluation, if this header is present in the request, we
 know that the request should be blocked.
 
-In the `fxa-https` frontend, we replace the `block` paramameters with the
+In the `fxa-https` frontend, we replace the `http-request deny` paramameters with the
 following logic:
 
 .. code::
@@ -819,7 +820,7 @@ needed.
 		# if previous ACL didn't pass, and IP isn't whitelisted, block the request
 		acl whitelisted req.fhdr(X-Haproxy-ACL) -m beg whitelisted,
 		acl fail-validation req.fhdr(X-Haproxy-ACL) -m found
-		block if !whitelisted fail-validation
+		http-request deny if !whitelisted fail-validation
 
 HAProxy management
 ------------------
