@@ -3,21 +3,20 @@
 # sudo yum -y install rpmdevtools && rpmdev-setuptree
 # sudo yum -y install pcre-devel openssl-devel
 # wget https://raw.github.com/nmilford/rpm-haproxy/master/haproxy.spec -O ./rpmbuild/SPECS/haproxy.spec
-# wget http://haproxy.1wt.eu/download/1.5/src/devel/haproxy-1.5-dev22.tar.gz -O ./rpmbuild/SOURCES/haproxy-1.5-dev22.tar.gz
+# wget http://haproxy.1wt.eu/download/1.5/src/haproxy-1.5.1.tar.gz -O ./rpmbuild/SOURCES/haproxy-1.5.1.tar.gz
 # rpmbuild -bb  ./rpmbuild/SPECS/haproxy.spec
 
-%define version 1.5
-%define dev_rel dev25
-%define release 1
+%define version 1.5.1
+%define release 1.5.1
 
 Summary: HA-Proxy is a TCP/HTTP reverse proxy for high availability environments
 Name: haproxy
 Version: %{version}
-Release: %{dev_rel}.%{release}
+Release: %{release}
 License: GPL
 Group: System Environment/Daemons
 URL: http://haproxy.1wt.eu
-Source0: http://haproxy.1wt.eu/download/1.5/src/devel/%{name}-%{version}-%{dev_rel}.tar.gz
+Source0: http://haproxy.1wt.eu/download/1.5/src/%{name}-%{version}.tar.gz
 BuildRoot: %{_tmppath}/%{name}-%{version}-root
 BuildRequires: pcre-devel openssl-devel
 Requires: /sbin/chkconfig, /sbin/service
@@ -39,7 +38,7 @@ handle thousands of simultaneous connections on hundreds of instances without
 risking the system's stability.
 
 %prep
-%setup -n %{name}-%{version}-%{dev_rel}
+%setup -n %{name}-%{version}
 
 # We don't want any perl dependecies in this RPM:
 %define __perl_requires /bin/true
@@ -79,7 +78,7 @@ fi
 
 %files
 %defattr(-,root,root)
-%doc CHANGELOG TODO examples/*.cfg doc/haproxy-en.txt doc/haproxy-fr.txt doc/architecture.txt doc/configuration.txt
+%doc CHANGELOG examples/*.cfg doc/haproxy-en.txt doc/haproxy-fr.txt doc/architecture.txt doc/configuration.txt
 %doc %{_mandir}/man1/%{name}.1*
 
 %attr(0755,root,root) %{_sbindir}/%{name}
@@ -88,5 +87,5 @@ fi
 %attr(0755,root,root) %config %{_sysconfdir}/rc.d/init.d/%{name}
 
 %changelog
-* Thu May 15 2014 Julien Vehent <jvehent@mozilla.com>
+* Sat Jun 28 2014 Julien Vehent <jvehent@mozilla.com>
 - Build RPM. see changelog at http://haproxy.1wt.eu/git?p=haproxy.git;a=log
