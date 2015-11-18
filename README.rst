@@ -526,7 +526,7 @@ data to it. This is what the `tcp-request content track-sc0 src` parameter does.
 
 Now that we have tracking in place, we can write ACLs that run tests against the
 content of the table. The examples below evaluate several of these counters
-against arbitary limits. Tune these to your needs.
+against arbitrary limits. Tune these to your needs.
 
 .. code::
 
